@@ -66,7 +66,7 @@ def build_services(config: Config) -> Services:
     generations = Generations(journal)
     confirmations = Confirmations(journal, clock, IdSequence("cfm"), generations)
     artifacts = Artifacts(journal, clock)
-    batches = BatchRegistry(journal)
+    batches = BatchRegistry(journal, bus)
 
     press = PressService(journal, bus, clock, generations, confirmations)
     steam = SteamService(journal, bus, clock, generations, confirmations)
@@ -96,9 +96,11 @@ def build_services(config: Config) -> Services:
         histories={
             "press.dryness": press.history(),
             "steam.pressure": steam.history(),
+            "steam.pressure.drift": steam.drift_history(),
             "glue.concentration": glue.history(),
             "broke.handling": broke.history(),
             "water.moisture": water.history(),
+            "water.moisture.drift": water.drift_history(),
         },
     )
 
@@ -125,6 +127,7 @@ def build_services(config: Config) -> Services:
     services.reload()
     dry.wire()
     glue.wire()
+    steam.wire()
     water.wire()
     audit.wire()
     state.wire()

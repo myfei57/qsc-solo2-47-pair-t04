@@ -72,6 +72,10 @@ def verdict_history(console: Any, request: Request) -> Response:
     since = request.param("since")
     if since is not None:
         body["changed_since"] = history.changed_since(int(since))
+    at = request.param("at")
+    if at is not None:
+        point = history.explain_at(int(at))
+        body["at"] = None if point is None else point.to_dict()
     return json_response(body)
 
 
@@ -252,6 +256,7 @@ def steam_pressure(console: Any, request: Request) -> Response:
             "offset": steam.offset_of(reading),
             "baseline": steam.view().baseline,
             "generation": steam.generation(),
+            "drift": steam.pressure_drift(reading).to_dict(),
             "history": steam.history().to_dict(),
         }
     )
@@ -379,6 +384,7 @@ def water_verdict(console: Any, request: Request) -> Response:
             "verdict_of": water.verdict_of(reading),
             "deviation": water.deviation(reading),
             "sustained": water.sustained_dry(reading).to_dict(),
+            "drift": water.moisture_drift(reading).to_dict(),
             "generation": water.generation(),
             "history": water.history().to_dict(),
         }

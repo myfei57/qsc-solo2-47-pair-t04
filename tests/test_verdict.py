@@ -8,12 +8,19 @@ from paperops.verdict import (
     ABOVE_MODE,
     BELOW,
     BELOW_MODE,
+    DRIFT_HIGH,
+    DRIFT_LOW,
     INSUFFICIENT,
+    LEARNING,
+    STEADY,
     SUSTAINED,
     TRANSIENT,
+    UNSETTLED,
     WITHIN,
+    AdaptiveBaseline,
     Band,
     BatchRegistry,
+    DriftEvaluator,
     HysteresisBand,
     RecordFilter,
     VerdictHistory,
@@ -102,6 +109,119 @@ def test_verdict_history_tracks_watermarks():
     assert history.to_dict()["current"] == "high"
     history.clear()
     assert history.current() == "unknown"
+
+
+def test_verdict_history_explains_the_compared_level():
+    history = VerdictHistory("water.moisture.drift")
+    history.record("steady", 1, 1, "reading=6.0", context={"level": 6.0, "low": 5.7, "high": 6.3})
+    history.record("drift_high", 4, 3, "reading=9.8", context={"level": 6.1, "low": 5.8, "high": 6.4})
+    point = history.explain_at(4)
+    assert point is not None
+    assert point.verdict == "drift_high"
+    assert point.context["high"] == 6.4
+    assert point.to_dict()["context"]["level"] == 6.1
+    earlier = history.explain_at(2)
+    assert earlier is not None and earlier.verdict == "steady"
+    assert history.explain_at(0) is None
+    plain = VerdictHistory("steam.pressure")
+    plain.record("in_band", 1, 1)
+    assert plain.explain_at(1).context == {}
+
+
+def test_adaptive_baseline_learns_the_normal_level():
+    baseline = AdaptiveBaseline(margin=3.0, minimum_samples=3, learn_rate=0.5, min_margin=0.5)
+    assert baseline.ready is False
+    first = baseline.observe(10.0)
+    assert first.ready is False and first.samples == 0
+    baseline.observe(10.2)
+    snapshot = baseline.observe(9.8)
+    assert snapshot.ready is False
+    snapshot = baseline.observe(10.1)
+    assert snapshot.ready is True
+    assert snapshot.low <= 10.1 <= snapshot.high
+    assert baseline.level == pytest.approx(10.0, abs=0.2)
+    band = baseline.band()
+    assert band.low == pytest.approx(baseline.level - baseline.half_width())
+
+
+def test_adaptive_baseline_never_learns_from_out_of_band_readings():
+    baseline = AdaptiveBaseline(margin=3.0, minimum_samples=3, learn_rate=0.5, min_margin=0.5)
+    for reading in (10.0, 10.0, 10.0):
+        baseline.observe(reading)
+    level = baseline.level
+    samples = baseline.samples
+    snapshot = baseline.observe(20.0)
+    assert 20.0 > snapshot.high
+    assert baseline.level == level
+    assert baseline.samples == samples
+    baseline.observe(10.1)
+    assert baseline.samples == samples + 1
+
+
+def test_adaptive_baseline_reset_forgets_the_level():
+    baseline = AdaptiveBaseline(margin=3.0, minimum_samples=2, min_margin=0.5)
+    baseline.observe(10.0)
+    baseline.observe(10.0)
+    assert baseline.ready is True
+    baseline.reset()
+    assert baseline.ready is False
+    assert baseline.samples == 0
+    with pytest.raises(ValueError):
+        AdaptiveBaseline(margin=0.0, minimum_samples=2)
+    with pytest.raises(ValueError):
+        AdaptiveBaseline(margin=3.0, minimum_samples=0)
+    with pytest.raises(ValueError):
+        AdaptiveBaseline(margin=3.0, minimum_samples=2, learn_rate=0.0)
+    with pytest.raises(ValueError):
+        AdaptiveBaseline(margin=3.0, minimum_samples=2, min_margin=-1.0)
+
+
+def drift_evaluator(window_size=3):
+    return DriftEvaluator(
+        AdaptiveBaseline(margin=3.0, minimum_samples=3, learn_rate=0.2, min_margin=0.5),
+        Window(window_size),
+    )
+
+
+def test_drift_evaluator_waits_for_a_sustained_departure():
+    evaluator = drift_evaluator()
+    for _ in range(3):
+        assert evaluator.push(10.0).verdict == LEARNING
+    assert evaluator.push(10.0).verdict == LEARNING
+    assert evaluator.push(10.0).verdict == LEARNING
+    assert evaluator.push(10.0).verdict == STEADY
+    assert evaluator.push(20.0).verdict == UNSETTLED
+    assert evaluator.push(20.0).verdict == UNSETTLED
+    verdict = evaluator.push(20.0)
+    assert verdict.verdict == DRIFT_HIGH
+    assert verdict.snapshot.level == pytest.approx(10.0)
+    assert verdict.reading == 20.0
+    assert verdict.deviation == pytest.approx(10.0)
+    assert verdict.window_samples == 3
+    body = verdict.to_dict()
+    assert body["baseline"]["high"] == pytest.approx(10.5)
+
+
+def test_drift_evaluator_reports_low_and_recovers():
+    evaluator = drift_evaluator()
+    for _ in range(6):
+        evaluator.push(10.0)
+    for _ in range(3):
+        verdict = evaluator.push(1.0)
+    assert verdict.verdict == DRIFT_LOW
+    for _ in range(3):
+        verdict = evaluator.push(10.0)
+    assert verdict.verdict == STEADY
+
+
+def test_drift_evaluator_relearns_after_a_reset():
+    evaluator = drift_evaluator()
+    for _ in range(6):
+        evaluator.push(10.0)
+    evaluator.reset()
+    verdicts = [evaluator.push(6.0).verdict for _ in range(6)]
+    assert verdicts[-1] == STEADY
+    assert DRIFT_LOW not in verdicts and DRIFT_HIGH not in verdicts
 
 
 def test_record_filter_matches_and_describes():

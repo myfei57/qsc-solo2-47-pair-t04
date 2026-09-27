@@ -10,10 +10,17 @@ from typing import Any, Mapping, Protocol
 
 from ..clock import LogicalClock
 from ..errors import PreGateError, StaleArtifactError
-from ..event import EventBus, topics
+from ..event import Event, EventBus, topics
 from ..interlock import PreGate
 from ..store import Journal, keys
-from ..verdict import Band, VerdictHistory
+from ..verdict import (
+    AdaptiveBaseline,
+    Band,
+    DriftEvaluator,
+    DriftVerdict,
+    VerdictHistory,
+    Window,
+)
 from ..version import Confirmations, Generations
 from . import calc
 from .view import SteamView
@@ -21,6 +28,10 @@ from .view import SteamView
 BASELINE_NAME = "steam.baseline"
 STEAM_NAME = "steam"
 BASELINE_BAND = Band(0.5, 12.0)
+DRIFT_MARGIN = 3.0
+DRIFT_MIN_MARGIN = 0.15
+DRIFT_WARMUP = 5
+DRIFT_WINDOW = 4
 
 
 class TransferSource(Protocol):
@@ -48,6 +59,15 @@ class SteamService:
         self._band = BASELINE_BAND
         self._drain_gate = PreGate("steam.valve", journal, keys.STEAM_DRAIN)
         self._history = VerdictHistory("steam.pressure")
+        self._drift = DriftEvaluator(
+            AdaptiveBaseline(
+                margin=DRIFT_MARGIN,
+                minimum_samples=DRIFT_WARMUP,
+                min_margin=DRIFT_MIN_MARGIN,
+            ),
+            Window(DRIFT_WINDOW),
+        )
+        self._drift_history = VerdictHistory("steam.pressure.drift")
         self._drained = False
         self._valve_open = False
 
@@ -184,6 +204,29 @@ class SteamService:
             self._valve_open = bool(valve["open"])
         return self.view()
 
+    def wire(self) -> None:
+        """Relearn the pressure level whenever a new batch is reserved."""
+        self._bus.subscribe(topics.TOPIC_BATCH_RESERVED, self._on_batch_reserved)
+
+    def pressure_drift(self, reading: float) -> DriftVerdict:
+        """Judge a reading against the learned normal, alarm only if it holds."""
+        verdict = self._drift.push(reading)
+        self._drift_history.record(
+            verdict.verdict,
+            self._journal.watermark,
+            self._clock.tick,
+            f"reading={verdict.reading}",
+            context=verdict.snapshot.to_dict(),
+        )
+        return verdict
+
+    def drift_history(self) -> VerdictHistory:
+        return self._drift_history
+
+    def reset_drift(self, level: float | None = None) -> None:
+        """Forget the learned normal, e.g. when a new batch brings its own level."""
+        self._drift.reset(level)
+
     # -------------------------------------------------------------- arithmetic
 
     def pressure_of(self, reading: float) -> str:
@@ -215,3 +258,8 @@ class SteamService:
 
     def window_verdict(self, offset_value: float, threshold: float) -> str:
         return calc.verdict(offset_value, threshold)
+
+    # ---------------------------------------------------------------- internals
+
+    def _on_batch_reserved(self, event: Event) -> None:
+        self.reset_drift()

@@ -11,8 +11,16 @@ from ..clock import LogicalClock
 from ..errors import OutOfRangeError, UnknownSensorError
 from ..event import Event, EventBus, topics
 from ..store import Journal, keys
-from ..verdict import Band, VerdictHistory, Window, WindowEvaluator
-from ..verdict import ABOVE_MODE
+from ..verdict import (
+    ABOVE_MODE,
+    AdaptiveBaseline,
+    Band,
+    DriftEvaluator,
+    DriftVerdict,
+    VerdictHistory,
+    Window,
+    WindowEvaluator,
+)
 from ..version import Confirmations, Generations
 from . import calc
 from .view import WaterView
@@ -22,6 +30,10 @@ WATER_NAME = "water"
 SAMPLE_LIMIT = 60
 MOISTURE_BAND = Band(2.0, 12.0)
 WINDOW_SIZE = 3
+DRIFT_MARGIN = 3.0
+DRIFT_MIN_MARGIN = 0.3
+DRIFT_WARMUP = 5
+DRIFT_WINDOW = 4
 
 
 class WaterService:
@@ -43,6 +55,15 @@ class WaterService:
         self._band = MOISTURE_BAND
         self._history = VerdictHistory("water.moisture")
         self._sustained = WindowEvaluator(Window(WINDOW_SIZE), 12.0, ABOVE_MODE, WINDOW_SIZE)
+        self._drift = DriftEvaluator(
+            AdaptiveBaseline(
+                margin=DRIFT_MARGIN,
+                minimum_samples=DRIFT_WARMUP,
+                min_margin=DRIFT_MIN_MARGIN,
+            ),
+            Window(DRIFT_WINDOW),
+        )
+        self._drift_history = VerdictHistory("water.moisture.drift")
         self._sensors = calc.default_sensors()
         self._profile_cache: list[dict[str, float]] | None = None
 
@@ -126,6 +147,25 @@ class WaterService:
         """Verdict that only holds once a whole window of readings is above target."""
         return self._sustained.push(reading)
 
+    def moisture_drift(self, reading: float) -> DriftVerdict:
+        """Judge a reading against the learned normal, alarm only if it holds."""
+        verdict = self._drift.push(reading)
+        self._drift_history.record(
+            verdict.verdict,
+            self._journal.watermark,
+            self._clock.tick,
+            f"reading={verdict.reading}",
+            context=verdict.snapshot.to_dict(),
+        )
+        return verdict
+
+    def drift_history(self) -> VerdictHistory:
+        return self._drift_history
+
+    def reset_drift(self, level: float | None = None) -> None:
+        """Forget the learned normal, e.g. when a new batch brings its own level."""
+        self._drift.reset(level)
+
     def view(self) -> WaterView:
         return WaterView(
             sensors=self.map_sensors(),
@@ -208,6 +248,7 @@ class WaterService:
     def wire(self) -> None:
         """Drop the cached profile whenever the sensor map moves."""
         self._bus.subscribe(topics.TOPIC_WATER_MAP, self._on_map_change)
+        self._bus.subscribe(topics.TOPIC_BATCH_RESERVED, self._on_batch_reserved)
 
     # -------------------------------------------------------------- arithmetic
 
@@ -235,3 +276,6 @@ class WaterService:
 
     def _on_map_change(self, event: Event) -> None:
         self._profile_cache = None
+
+    def _on_batch_reserved(self, event: Event) -> None:
+        self.reset_drift()

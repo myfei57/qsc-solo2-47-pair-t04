@@ -1,5 +1,7 @@
 """Topic names carried on the control event bus."""
 
+TOPIC_BATCH_RESERVED = "batch.reserved"
+
 TOPIC_DEWATER_PERSISTED = "press.dewater.persisted"
 TOPIC_PRESS_LOAD = "press.load.changed"
 
@@ -34,6 +36,7 @@ TOPIC_WATER_SAMPLE = "water.sample.added"
 TOPIC_SNAPSHOT = "state.snapshot"
 
 ALL_TOPICS: tuple[str, ...] = (
+    TOPIC_BATCH_RESERVED,
     TOPIC_DEWATER_PERSISTED,
     TOPIC_PRESS_LOAD,
     TOPIC_DRY_PROCEDURE,

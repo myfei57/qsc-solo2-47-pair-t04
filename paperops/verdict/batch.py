@@ -3,14 +3,16 @@
 from typing import Any, Mapping
 
 from ..errors import DuplicateBatchError, UnknownBatchError
+from ..event import EventBus, topics
 from ..store import Journal, keys
 
 
 class BatchRegistry:
     """Reserves batch identifiers so each process batch is accepted only once."""
 
-    def __init__(self, journal: Journal) -> None:
+    def __init__(self, journal: Journal, bus: EventBus | None = None) -> None:
         self._journal = journal
+        self._bus = bus
 
     def reserve(self, batch_id: str, payload: Mapping[str, Any]) -> None:
         """Publish a batch; a repeated identifier is refused."""
@@ -20,6 +22,8 @@ class BatchRegistry:
         row.update(payload)
         with self._journal.transaction("batch") as batch:
             self._journal.append(keys.batch_key(batch_id), row, batch)
+        if self._bus is not None:
+            self._bus.publish(topics.TOPIC_BATCH_RESERVED, batch_id)
 
     def payload(self, batch_id: str) -> Mapping[str, Any] | None:
         return self._journal.read(keys.batch_key(batch_id))

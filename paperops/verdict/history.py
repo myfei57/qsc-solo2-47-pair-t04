@@ -1,7 +1,7 @@
 """Current verdicts next to verdicts frozen at earlier watermarks."""
 
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass, field
+from typing import Any, Mapping
 
 UNKNOWN = "unknown"
 
@@ -14,6 +14,7 @@ class VerdictPoint:
     watermark: int
     tick: int
     detail: str = ""
+    context: Mapping[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -21,6 +22,7 @@ class VerdictPoint:
             "watermark": self.watermark,
             "tick": self.tick,
             "detail": self.detail,
+            "context": dict(self.context),
         }
 
 
@@ -35,8 +37,21 @@ class VerdictHistory:
     def subject(self) -> str:
         return self._subject
 
-    def record(self, verdict: str, watermark: int, tick: int, detail: str = "") -> VerdictPoint:
-        point = VerdictPoint(verdict=verdict, watermark=watermark, tick=tick, detail=detail)
+    def record(
+        self,
+        verdict: str,
+        watermark: int,
+        tick: int,
+        detail: str = "",
+        context: Mapping[str, Any] | None = None,
+    ) -> VerdictPoint:
+        point = VerdictPoint(
+            verdict=verdict,
+            watermark=watermark,
+            tick=tick,
+            detail=detail,
+            context={} if context is None else dict(context),
+        )
         self._points.append(point)
         return point
 
@@ -52,6 +67,14 @@ class VerdictHistory:
             if point.watermark <= watermark:
                 verdict = point.verdict
         return verdict
+
+    def explain_at(self, watermark: int) -> VerdictPoint | None:
+        """The full point in force at a position, with the level it compared against."""
+        found = None
+        for point in self._points:
+            if point.watermark <= watermark:
+                found = point
+        return found
 
     def changed_since(self, watermark: int) -> bool:
         return self.current() != self.at(watermark)
