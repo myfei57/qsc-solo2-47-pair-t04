@@ -96,9 +96,11 @@ def build_services(config: Config) -> Services:
         histories={
             "press.dryness": press.history(),
             "steam.pressure": steam.history(),
+            "steam.pressure.drift": steam.drift_history(),
             "glue.concentration": glue.history(),
             "broke.handling": broke.history(),
             "water.moisture": water.history(),
+            "water.moisture.drift": water.drift_history(),
         },
     )
 

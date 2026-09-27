@@ -11,6 +11,8 @@ TOPIC_STEAM_DRAINED = "steam.drained"
 TOPIC_STEAM_VALVE = "steam.valve.changed"
 TOPIC_STEAM_BASELINE_SET = "steam.baseline.set"
 TOPIC_STEAM_BASELINE_INVALIDATED = "steam.baseline.invalidated"
+TOPIC_STEAM_DRIFT = "steam.drift.judged"
+TOPIC_STEAM_DRIFT_RESET = "steam.drift.reset"
 
 TOPIC_GLUE_ROLL_LIFTED = "glue.roll.lifted"
 TOPIC_GLUE_PUMP_STOPPED = "glue.pump.stopped"
@@ -30,6 +32,8 @@ TOPIC_BROKE_HANDLED = "broke.handled"
 TOPIC_WATER_MAP = "water.map.rebuilt"
 TOPIC_WATER_PROFILE = "water.profile.changed"
 TOPIC_WATER_SAMPLE = "water.sample.added"
+TOPIC_WATER_DRIFT = "water.drift.judged"
+TOPIC_WATER_DRIFT_RESET = "water.drift.reset"
 
 TOPIC_SNAPSHOT = "state.snapshot"
 
@@ -43,6 +47,8 @@ ALL_TOPICS: tuple[str, ...] = (
     TOPIC_STEAM_VALVE,
     TOPIC_STEAM_BASELINE_SET,
     TOPIC_STEAM_BASELINE_INVALIDATED,
+    TOPIC_STEAM_DRIFT,
+    TOPIC_STEAM_DRIFT_RESET,
     TOPIC_GLUE_ROLL_LIFTED,
     TOPIC_GLUE_PUMP_STOPPED,
     TOPIC_GLUE_ALARM,
@@ -57,5 +63,7 @@ ALL_TOPICS: tuple[str, ...] = (
     TOPIC_WATER_MAP,
     TOPIC_WATER_PROFILE,
     TOPIC_WATER_SAMPLE,
+    TOPIC_WATER_DRIFT,
+    TOPIC_WATER_DRIFT_RESET,
     TOPIC_SNAPSHOT,
 )

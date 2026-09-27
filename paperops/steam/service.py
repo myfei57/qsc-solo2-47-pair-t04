@@ -13,7 +13,7 @@ from ..errors import PreGateError, StaleArtifactError
 from ..event import EventBus, topics
 from ..interlock import PreGate
 from ..store import Journal, keys
-from ..verdict import Band, VerdictHistory
+from ..verdict import AdaptiveBaseline, Band, BaselineVerdict, VerdictHistory
 from ..version import Confirmations, Generations
 from . import calc
 from .view import SteamView
@@ -21,6 +21,7 @@ from .view import SteamView
 BASELINE_NAME = "steam.baseline"
 STEAM_NAME = "steam"
 BASELINE_BAND = Band(0.5, 12.0)
+DRIFT_JUDGMENT_LIMIT = 120
 
 
 class TransferSource(Protocol):
@@ -48,6 +49,8 @@ class SteamService:
         self._band = BASELINE_BAND
         self._drain_gate = PreGate("steam.valve", journal, keys.STEAM_DRAIN)
         self._history = VerdictHistory("steam.pressure")
+        self._drift = AdaptiveBaseline(alpha=0.25, width_k=3.0, floor=0.1, warmup=5, hold=3)
+        self._drift_history = VerdictHistory("steam.pressure.drift")
         self._drained = False
         self._valve_open = False
 
@@ -88,6 +91,62 @@ class SteamService:
 
     def history(self) -> VerdictHistory:
         return self._history
+
+    def judge_pressure(self, reading: float) -> BaselineVerdict:
+        """Judge a pressure reading against the learned normal level.
+
+        The stored judgement keeps the level and band it was compared against,
+        so a later review can see the normal that was in force at the time.
+        """
+        verdict = self._drift.observe(reading)
+        tick = self._clock.tick
+        self._drift_history.record(
+            verdict.verdict,
+            self._journal.watermark,
+            tick,
+            verdict.describe(),
+        )
+        judgments = list(self.drift_judgments())
+        judgments.append(dict(verdict.to_dict(), tick=tick))
+        row = {
+            "state": self._drift.snapshot(),
+            "judgments": judgments[-DRIFT_JUDGMENT_LIMIT:],
+        }
+        with self._journal.transaction("steam-drift") as batch:
+            self._journal.append(keys.STEAM_DRIFT, row, batch)
+        self._bus.publish(topics.TOPIC_STEAM_DRIFT, verdict.to_dict())
+        return verdict
+
+    def relearn_pressure(self, hint: float | None = None) -> dict[str, Any]:
+        """Forget the learned normal, as when the grade changes, and re-learn.
+
+        The stored judgements are kept: each carries its baseline generation,
+        so the trail still shows which normal each verdict was compared against.
+        """
+        generation = self._drift.reset(hint)
+        row = {
+            "state": self._drift.snapshot(),
+            "judgments": list(self.drift_judgments()),
+        }
+        with self._journal.transaction("steam-drift-reset") as batch:
+            self._journal.append(keys.STEAM_DRIFT, row, batch)
+        self._bus.publish(topics.TOPIC_STEAM_DRIFT_RESET, generation)
+        return {"generation": generation}
+
+    def drift_judgments(self) -> tuple[dict[str, Any], ...]:
+        """Stored judgements, each with the baseline it was compared against."""
+        row = self._journal.read(keys.STEAM_DRIFT)
+        if row is None:
+            return ()
+        return tuple(row["judgments"])
+
+    def drift_baseline(self) -> dict[str, Any]:
+        """The learned normal currently in force."""
+        low, high = self._drift.band()
+        return dict(self._drift.snapshot(), low=low, high=high)
+
+    def drift_history(self) -> VerdictHistory:
+        return self._drift_history
 
     def view(self) -> SteamView:
         row = self.baseline()
@@ -182,6 +241,9 @@ class SteamService:
         valve = self._journal.read(keys.STEAM_VALVE)
         if valve is not None:
             self._valve_open = bool(valve["open"])
+        drift = self._journal.read(keys.STEAM_DRIFT)
+        if drift is not None:
+            self._drift.restore(**drift["state"])
         return self.view()
 
     # -------------------------------------------------------------- arithmetic

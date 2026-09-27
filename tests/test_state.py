@@ -53,7 +53,9 @@ def test_verdict_history_is_reported_per_subject(console, services):
         "glue.concentration",
         "press.dryness",
         "steam.pressure",
+        "steam.pressure.drift",
         "water.moisture",
+        "water.moisture.drift",
     )
     ok(console, "GET", "/api/press/model")
     history = services.state.verdict_history("press.dryness")

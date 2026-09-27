@@ -11,7 +11,14 @@ from ..clock import LogicalClock
 from ..errors import OutOfRangeError, UnknownSensorError
 from ..event import Event, EventBus, topics
 from ..store import Journal, keys
-from ..verdict import Band, VerdictHistory, Window, WindowEvaluator
+from ..verdict import (
+    AdaptiveBaseline,
+    Band,
+    BaselineVerdict,
+    VerdictHistory,
+    Window,
+    WindowEvaluator,
+)
 from ..verdict import ABOVE_MODE
 from ..version import Confirmations, Generations
 from . import calc
@@ -22,6 +29,7 @@ WATER_NAME = "water"
 SAMPLE_LIMIT = 60
 MOISTURE_BAND = Band(2.0, 12.0)
 WINDOW_SIZE = 3
+DRIFT_JUDGMENT_LIMIT = 120
 
 
 class WaterService:
@@ -43,6 +51,8 @@ class WaterService:
         self._band = MOISTURE_BAND
         self._history = VerdictHistory("water.moisture")
         self._sustained = WindowEvaluator(Window(WINDOW_SIZE), 12.0, ABOVE_MODE, WINDOW_SIZE)
+        self._drift = AdaptiveBaseline(alpha=0.25, width_k=3.0, floor=0.3, warmup=5, hold=3)
+        self._drift_history = VerdictHistory("water.moisture.drift")
         self._sensors = calc.default_sensors()
         self._profile_cache: list[dict[str, float]] | None = None
 
@@ -126,6 +136,62 @@ class WaterService:
         """Verdict that only holds once a whole window of readings is above target."""
         return self._sustained.push(reading)
 
+    def judge_moisture(self, reading: float) -> BaselineVerdict:
+        """Judge a moisture reading against the learned normal level.
+
+        The stored judgement keeps the level and band it was compared against,
+        so a later review can see the normal that was in force at the time.
+        """
+        verdict = self._drift.observe(reading)
+        tick = self._clock.tick
+        self._drift_history.record(
+            verdict.verdict,
+            self._journal.watermark,
+            tick,
+            verdict.describe(),
+        )
+        judgments = list(self.drift_judgments())
+        judgments.append(dict(verdict.to_dict(), tick=tick))
+        row = {
+            "state": self._drift.snapshot(),
+            "judgments": judgments[-DRIFT_JUDGMENT_LIMIT:],
+        }
+        with self._journal.transaction("water-drift") as batch:
+            self._journal.append(keys.WATER_DRIFT, row, batch)
+        self._bus.publish(topics.TOPIC_WATER_DRIFT, verdict.to_dict())
+        return verdict
+
+    def relearn_moisture(self, hint: float | None = None) -> dict[str, Any]:
+        """Forget the learned normal, as when the furnish changes, and re-learn.
+
+        The stored judgements are kept: each carries its baseline generation,
+        so the trail still shows which normal each verdict was compared against.
+        """
+        generation = self._drift.reset(hint)
+        row = {
+            "state": self._drift.snapshot(),
+            "judgments": list(self.drift_judgments()),
+        }
+        with self._journal.transaction("water-drift-reset") as batch:
+            self._journal.append(keys.WATER_DRIFT, row, batch)
+        self._bus.publish(topics.TOPIC_WATER_DRIFT_RESET, generation)
+        return {"generation": generation}
+
+    def drift_judgments(self) -> tuple[dict[str, Any], ...]:
+        """Stored judgements, each with the baseline it was compared against."""
+        row = self._journal.read(keys.WATER_DRIFT)
+        if row is None:
+            return ()
+        return tuple(row["judgments"])
+
+    def drift_baseline(self) -> dict[str, Any]:
+        """The learned normal currently in force."""
+        low, high = self._drift.band()
+        return dict(self._drift.snapshot(), low=low, high=high)
+
+    def drift_history(self) -> VerdictHistory:
+        return self._drift_history
+
     def view(self) -> WaterView:
         return WaterView(
             sensors=self.map_sensors(),
@@ -202,6 +268,9 @@ class WaterService:
         stored = self._journal.read(keys.WATER_MAP)
         if stored is not None:
             self._sensors = {str(k): float(v) for k, v in stored["sensors"].items()}
+        drift = self._journal.read(keys.WATER_DRIFT)
+        if drift is not None:
+            self._drift.restore(**drift["state"])
         self._profile_cache = None
         return self.view()
 
